@@ -25,6 +25,8 @@
               waitress
               requests
               duckdb
+              pyjwt
+              cryptography
             ]
           );
           hardened = {
@@ -82,10 +84,33 @@
           };
 
           options.services.gluck-site = {
-            hostname = lib.mkOption {
-              type = lib.types.str;
-              default = "gluck.kelliher.info";
-              description = "Public hostname for the authenticated API site";
+            todoSubdomains = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ "todo" ];
+              description = ''
+                Subdomain labels for the todo API. Expanded across
+                `services.kelliher-web.baseDomains` at the platform.
+                Defaults to `todo` (→ `todo.<baseDomain>`).
+              '';
+            };
+            accountsSubdomains = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ "accounts" ];
+              description = ''
+                Subdomain labels for the accounts-minting API. Defaults
+                to `accounts` (→ `accounts.<baseDomain>`).
+              '';
+            };
+            extraHostnames = lib.mkOption {
+              type = lib.types.attrsOf (lib.types.listOf lib.types.str);
+              default = { };
+              example = {
+                todo = [ "gluck.kelliher.info" ];
+              };
+              description = ''
+                Fully-qualified hostnames per site, merged into
+                `sites.<site>.hostnames`. Escape hatch for legacy names.
+              '';
             };
           };
 
@@ -142,16 +167,21 @@
             })
 
             (lib.mkIf (acctCfg.enable || todoCfg.enable) {
-              # Register the public site: everything behind Authelia 2FA.
-              # Inside the generated route block order is literal, so the
-              # /accounts* proxy is consulted before the todo catch-all.
-              services.kelliher-web.sites.gluck = {
-                hostnames = [ siteCfg.hostname ];
+              # Register public sites, all behind Authelia 2FA. Splitting
+              # `todo` and `accounts` into two Caddy site blocks means each
+              # gets its own hostname (todo.<base>, accounts.<base>) with
+              # no path-based routing dance.
+              services.kelliher-web.sites.gluck-todo = lib.mkIf todoCfg.enable {
+                subdomains = siteCfg.todoSubdomains;
+                hostnames = siteCfg.extraHostnames.todo or [ ];
                 requireAuth = true;
                 proxyTo = todoCfg.port;
-                extraConfig = lib.optionalString acctCfg.enable ''
-                  reverse_proxy /accounts* localhost:${toString acctCfg.port}
-                '';
+              };
+              services.kelliher-web.sites.gluck-accounts = lib.mkIf acctCfg.enable {
+                subdomains = siteCfg.accountsSubdomains;
+                hostnames = siteCfg.extraHostnames.accounts or [ ];
+                requireAuth = true;
+                proxyTo = acctCfg.port;
               };
             })
           ];

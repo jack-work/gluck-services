@@ -4,6 +4,13 @@ Trust model: binds to loopback; identity comes from the Remote-User /
 Remote-Groups headers set by Caddy from Authelia's forward-auth response
 (client-supplied values are stripped upstream).
 
+Bearer bypass: when a request carries an ``Authorization: Bearer <jwt>``
+header, Caddy skips forward-auth and delivers the request straight to us.
+A middleware here validates the JWT against Authelia's JWKS and synthesises
+Remote-User / Remote-Groups from the ``preferred_username`` / ``groups``
+claims before the rest of the app sees the request. The rest of the code
+doesn't need to know which path a request came in on.
+
 Authorization: creating todos requires the gluck-todo-create group.
 Per-item permissions (Read/Write/Delete/Share) live in the acl table;
 the creator gets all four. Items the caller cannot Read return 404 to
@@ -14,12 +21,74 @@ DuckDB is single-writer: one connection guarded by a lock, single instance.
 
 import os
 import threading
+import time
 
 import duckdb
+import jwt
+import requests
 from flask import Flask, jsonify, request
+from jwt import PyJWKClient
 
 DB_PATH = os.environ.get("GLUCK_TODO_DB", "/var/lib/gluck-todo/todo.duckdb")
 PORT = int(os.environ.get("PORT", "9093"))
+
+# OIDC config for bearer validation. Left as env so the same code runs
+# against a staging Authelia. ISSUER must exactly match the ``iss`` claim
+# Authelia produces (its external URL, no trailing slash).
+OIDC_ISSUER = os.environ.get("GLUCK_TODO_OIDC_ISSUER", "https://auth.kelliher.info")
+# JWKS is fetched over loopback by default — Authelia runs on the same box.
+# Going through the public URL would take a Cloudflare round-trip and, more
+# annoyingly, CF blocks urllib's default UA with 403.
+OIDC_JWKS_URL = os.environ.get(
+    "GLUCK_TODO_OIDC_JWKS_URL", "http://127.0.0.1:9091/jwks.json"
+)
+# Authelia's access tokens include ``client_id`` (not ``aud``) identifying
+# the requesting client. We validate the ``client_id`` claim explicitly.
+OIDC_CLIENT_ID = os.environ.get("GLUCK_TODO_OIDC_CLIENT_ID", "gluck-todo-cli")
+# Userinfo lives at /api/oidc/userinfo. Loopback again — same reason.
+OIDC_USERINFO_URL = os.environ.get(
+    "GLUCK_TODO_OIDC_USERINFO_URL", "http://127.0.0.1:9091/api/oidc/userinfo"
+)
+# Userinfo cache: keyed by access-token sha, small TTL. Handles the common
+# case where a client bursts several requests back-to-back with the same
+# token; avoids re-hitting Authelia every hit.
+_userinfo_cache: dict = {}
+_userinfo_cache_lock = threading.Lock()
+USERINFO_TTL = 60  # seconds
+
+
+def fetch_userinfo(access_token: str, sub: str) -> dict:
+    now = time.time()
+    with _userinfo_cache_lock:
+        hit = _userinfo_cache.get(sub)
+        if hit and hit[0] > now:
+            return hit[1]
+    r = requests.get(
+        OIDC_USERINFO_URL,
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=5,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"userinfo {r.status_code}: {r.text}")
+    data = r.json() if r.headers.get("content-type", "").startswith("application/json") else _decode_jwt_payload(r.text)
+    with _userinfo_cache_lock:
+        _userinfo_cache[sub] = (now + USERINFO_TTL, data)
+    return data
+
+
+def _decode_jwt_payload(compact: str) -> dict:
+    """Authelia signs userinfo as a JWS when the client's ``userinfo_signed
+    _response_alg`` is set. Since we haven't set it, we get JSON. This
+    fallback exists so a config flip doesn't crash the API."""
+    import base64
+    import json as _json
+
+    parts = compact.split(".")
+    if len(parts) < 2:
+        return {}
+    pad = "=" * (-len(parts[1]) % 4)
+    return _json.loads(base64.urlsafe_b64decode(parts[1] + pad))
+
 
 CREATE_GROUP = "gluck-todo-create"
 PERMISSIONS = ("Read", "Write", "Delete", "Share")
@@ -27,6 +96,75 @@ PERMISSIONS = ("Read", "Write", "Delete", "Share")
 app = Flask(__name__)
 db_lock = threading.Lock()
 db = duckdb.connect(DB_PATH)
+
+# JWKS client caches keys and refetches when a new kid appears; safe to
+# construct lazily so the app boots even if Authelia is briefly down.
+_jwks_client = None
+_jwks_lock = threading.Lock()
+
+
+def jwks_client():
+    global _jwks_client
+    with _jwks_lock:
+        if _jwks_client is None:
+            _jwks_client = PyJWKClient(OIDC_JWKS_URL, cache_keys=True, lifespan=3600)
+        return _jwks_client
+
+
+@app.before_request
+def bearer_to_remote_headers():
+    """If the caller sent Authorization: Bearer <jwt>, verify it and stamp
+    Remote-User / Remote-Groups from the claims. Downstream handlers then
+    behave identically to the forward-auth path.
+
+    On any verification failure we fail closed with 401. We never fall
+    through to trusting caller-supplied Remote-* headers when a bearer is
+    present — that would let a bogus token bypass auth by presenting both.
+    """
+    auth = request.headers.get("Authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return None
+    token = auth.split(None, 1)[1].strip()
+    try:
+        signing_key = jwks_client().get_signing_key_from_jwt(token).key
+        claims = jwt.decode(
+            token,
+            signing_key,
+            algorithms=["RS256"],
+            issuer=OIDC_ISSUER,
+            # Authelia access tokens have an empty ``aud`` and identify the
+            # requesting client via ``client_id`` instead. Disable audience
+            # verification and enforce client_id below.
+            options={
+                "require": ["exp", "iat", "iss", "sub", "client_id"],
+                "verify_aud": False,
+            },
+        )
+    except Exception as e:  # noqa: BLE001 — any failure = reject
+        return jsonify(error=f"invalid bearer token: {e}"), 401
+
+    if claims.get("client_id") != OIDC_CLIENT_ID:
+        return jsonify(error="token not issued for this client"), 401
+
+    # Identity claims live on the *id_token*, not the access token. Authelia
+    # exposes them at /api/oidc/userinfo when the client presents a valid
+    # access token; we fetch there and cache per-token via the ``sub`` claim.
+    userinfo = fetch_userinfo(token, claims["sub"])
+    username = (
+        userinfo.get("preferred_username")
+        or userinfo.get("sub")
+        or claims.get("sub")
+        or ""
+    )
+    groups = userinfo.get("groups") or []
+    if isinstance(groups, str):
+        groups = [g.strip() for g in groups.split(",") if g.strip()]
+
+    # request.headers is immutable; stash on the environ so the caller-
+    # facing helpers below pick it up. environ is per-request.
+    request.environ["HTTP_REMOTE_USER"] = username
+    request.environ["HTTP_REMOTE_GROUPS"] = ",".join(groups)
+    return None
 
 db.execute("CREATE SEQUENCE IF NOT EXISTS todo_id_seq")
 db.execute(
