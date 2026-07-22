@@ -5,11 +5,11 @@ Two small authenticated APIs served behind the
 and gated by Authelia forward-auth (password + 2FA):
 
 - **gluck-accounts** (`POST /accounts`) — mints user accounts in lldap via
-  its GraphQL API. Requires the `gluck-accounts-create` group. New users
+  its GraphQL API. Requires the `accounts-create` group. New users
   get a random temporary password, returned exactly once.
 - **gluck-todo** (`/todos`) — CRUD over a DuckDB-backed todo table with
   per-item ACLs (`Read`/`Write`/`Delete`/`Share`). Creating requires the
-  `gluck-todo-create` group; the creator gets all four permissions and can
+  `todo-create` group; the creator gets all four permissions and can
   grant them to others via `POST /todos/{id}/share`. Items you cannot Read
   return 404.
 

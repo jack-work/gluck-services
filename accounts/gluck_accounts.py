@@ -3,7 +3,7 @@
 Trust model: this service binds to loopback and trusts the Remote-User /
 Remote-Groups headers because the only route to it is Caddy, which strips
 client-supplied Remote-* headers and sets them from Authelia's forward-auth
-response. Callers must hold the gluck-accounts-create group.
+response. Callers must hold the accounts-create group.
 """
 
 import os
@@ -19,7 +19,7 @@ PASSWORD_FILE = os.environ["LLDAP_PASSWORD_FILE"]
 SERVICE_USER = os.environ.get("LLDAP_SERVICE_USER", "gluck-accounts")
 PORT = int(os.environ.get("PORT", "9092"))
 
-REQUIRED_GROUP = "gluck-accounts-create"
+REQUIRED_GROUP = "accounts-create"
 USERNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{2,31}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # Only application capability groups may be granted here — never lldap_admin

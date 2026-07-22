@@ -11,7 +11,7 @@ Remote-User / Remote-Groups from the ``preferred_username`` / ``groups``
 claims before the rest of the app sees the request. The rest of the code
 doesn't need to know which path a request came in on.
 
-Authorization: creating todos requires the gluck-todo-create group.
+Authorization: creating todos requires the todo-create group.
 Per-item permissions (Read/Write/Delete/Share) live in the acl table;
 the creator gets all four. Items the caller cannot Read return 404 to
 avoid existence leaks; Read-but-not-X returns 403.
@@ -90,7 +90,7 @@ def _decode_jwt_payload(compact: str) -> dict:
     return _json.loads(base64.urlsafe_b64decode(parts[1] + pad))
 
 
-CREATE_GROUP = "gluck-todo-create"
+CREATE_GROUP = "todo-create"
 PERMISSIONS = ("Read", "Write", "Delete", "Share")
 
 app = Flask(__name__)

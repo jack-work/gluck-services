@@ -175,14 +175,14 @@
                 subdomains = siteCfg.todoSubdomains;
                 hostnames = siteCfg.extraHostnames.todo or [ ];
                 requireAuth = true;
-                requiredGroups = [ "gluck-todo-create" ];
+                requiredGroups = [ "todo-create" ];
                 proxyTo = todoCfg.port;
               };
               services.kelliher-web.sites.gluck-accounts = lib.mkIf acctCfg.enable {
                 subdomains = siteCfg.accountsSubdomains;
                 hostnames = siteCfg.extraHostnames.accounts or [ ];
                 requireAuth = true;
-                requiredGroups = [ "gluck-accounts-create" ];
+                requiredGroups = [ "accounts-create" ];
                 proxyTo = acctCfg.port;
               };
             })
