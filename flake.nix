@@ -130,10 +130,10 @@
                 ];
                 wants = [ "lldap.service" ];
                 wantedBy = [ "multi-user.target" ];
-                path = [ pkgs.lldap ]; # provides lldap_set_password
                 environment = {
                   LLDAP_URL = acctCfg.lldapUrl;
                   LLDAP_PASSWORD_FILE = "%d/lldap_password";
+                  LLDAP_SET_PASSWORD_BIN = "${pkgs.lldap}/bin/lldap_set_password";
                   PORT = toString acctCfg.port;
                 };
                 serviceConfig = hardened // {
@@ -188,8 +188,38 @@
             })
           ];
         };
+
+      forAllSystems = nixpkgs.lib.genAttrs [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
     in
     {
       nixosModules.default = nixosModule;
+
+      checks = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          py = pkgs.python3.withPackages (
+            ps: with ps; [
+              flask
+              waitress
+              requests
+              duckdb
+              pyjwt
+              cryptography
+            ]
+          );
+        in
+        {
+          accounts = pkgs.runCommand "gluck-accounts-tests" { } ''
+            set -o pipefail
+            install -m 0644 ${./accounts/gluck_accounts.py} gluck_accounts.py
+            install -m 0644 ${./accounts/test_gluck_accounts.py} test_gluck_accounts.py
+            ${py}/bin/python -u test_gluck_accounts.py 2>&1 | tee $out
+          '';
+        }
+      );
     };
 }

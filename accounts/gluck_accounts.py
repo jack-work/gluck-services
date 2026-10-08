@@ -17,6 +17,7 @@ from flask import Flask, jsonify, request
 LLDAP_URL = os.environ.get("LLDAP_URL", "http://127.0.0.1:17170")
 PASSWORD_FILE = os.environ["LLDAP_PASSWORD_FILE"]
 SERVICE_USER = os.environ.get("LLDAP_SERVICE_USER", "gluck-accounts")
+SET_PASSWORD_BIN = os.environ.get("LLDAP_SET_PASSWORD_BIN", "lldap_set_password")
 PORT = int(os.environ.get("PORT", "9092"))
 
 REQUIRED_GROUP = "accounts-create"
@@ -30,6 +31,10 @@ app = Flask(__name__)
 
 
 class GraphQLError(Exception):
+    pass
+
+
+class SetPasswordError(Exception):
     pass
 
 
@@ -78,6 +83,30 @@ def user_exists(token, username):
         return data.get("user") is not None
     except GraphQLError:
         return False
+
+
+def set_password(token, username, password):
+    env = dict(os.environ)
+    env["LLDAP_USER_PASSWORD"] = password
+    proc = subprocess.run(
+        [
+            SET_PASSWORD_BIN,
+            "--base-url", LLDAP_URL,
+            "--token", token,
+            "--username", username,
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        detail = ((proc.stderr or "") + (proc.stdout or "")).strip()
+        if password:
+            detail = detail.replace(password, "***")
+        raise SetPasswordError(
+            f"lldap_set_password rc={proc.returncode} {detail[:500]}"
+        )
 
 
 def group_id(token, name):
@@ -134,17 +163,7 @@ def create_account():
     )
 
     temp_password = secrets.token_urlsafe(16)
-    subprocess.run(
-        [
-            "lldap_set_password",
-            "--base-url", LLDAP_URL,
-            "--token", token,
-            "--username", username,
-            "--password", temp_password,
-        ],
-        check=True,
-        capture_output=True,
-    )
+    set_password(token, username, temp_password)
 
     for g, gid in group_ids.items():
         gql(
