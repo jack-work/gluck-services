@@ -55,12 +55,6 @@
           options.services.gluck-accounts = {
             enable = lib.mkEnableOption "gluck-accounts API (mints lldap users)";
 
-            port = lib.mkOption {
-              type = lib.types.port;
-              default = 9092;
-              description = "Loopback port for the accounts API";
-            };
-
             lldapUrl = lib.mkOption {
               type = lib.types.str;
               default = "http://127.0.0.1:17170";
@@ -75,12 +69,6 @@
 
           options.services.gluck-todo = {
             enable = lib.mkEnableOption "gluck-todo API (DuckDB-backed todos with per-item ACLs)";
-
-            port = lib.mkOption {
-              type = lib.types.port;
-              default = 9093;
-              description = "Loopback port for the todo API";
-            };
           };
 
           options.services.gluck-site = {
@@ -134,7 +122,7 @@
                   LLDAP_URL = acctCfg.lldapUrl;
                   LLDAP_PASSWORD_FILE = "%d/lldap_password";
                   LLDAP_SET_PASSWORD_BIN = "${pkgs.lldap}/bin/lldap_set_password";
-                  PORT = toString acctCfg.port;
+                  KWEB_LISTEN = "socket";
                 };
                 serviceConfig = hardened // {
                   User = "gluck-accounts";
@@ -154,7 +142,7 @@
                 wantedBy = [ "multi-user.target" ];
                 environment = {
                   GLUCK_TODO_DB = "/var/lib/gluck-todo/todo.duckdb";
-                  PORT = toString todoCfg.port;
+                  KWEB_LISTEN = "socket";
                 };
                 serviceConfig = hardened // {
                   DynamicUser = true;
@@ -176,14 +164,14 @@
                 hostnames = siteCfg.extraHostnames.todo or [ ];
                 requireAuth = true;
                 requiredGroups = [ "todo-create" ];
-                proxyTo = todoCfg.port;
+                proxySocket = "gluck-todo.service";
               };
               services.kelliher-web.sites.gluck-accounts = lib.mkIf acctCfg.enable {
                 subdomains = siteCfg.accountsSubdomains;
                 hostnames = siteCfg.extraHostnames.accounts or [ ];
                 requireAuth = true;
                 requiredGroups = [ "accounts-create" ];
-                proxyTo = acctCfg.port;
+                proxySocket = "gluck-accounts.service";
               };
             })
           ];
@@ -218,6 +206,14 @@
             install -m 0644 ${./accounts/gluck_accounts.py} gluck_accounts.py
             install -m 0644 ${./accounts/test_gluck_accounts.py} test_gluck_accounts.py
             ${py}/bin/python -u test_gluck_accounts.py 2>&1 | tee $out
+          '';
+
+          socket = pkgs.runCommand "gluck-services-socket" { } ''
+            set -o pipefail
+            export SOCKET_ACTIVATE=${pkgs.systemd}/bin/systemd-socket-activate
+            export ACCOUNTS_ENTRY=${./accounts/gluck_accounts.py}
+            export TODO_ENTRY=${./todo/gluck_todo.py}
+            ${py}/bin/python -u ${./tests/test_socket.py} 2>&1 | tee $out
           '';
         }
       );

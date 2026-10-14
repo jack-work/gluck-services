@@ -1,6 +1,7 @@
 """gluck-todo — CRUD over a DuckDB-backed todo table with per-item ACLs.
 
-Trust model: binds to loopback; identity comes from the Remote-User /
+Trust model: listens only on the socket systemd hands it, which only Caddy
+can reach; identity comes from the Remote-User /
 Remote-Groups headers set by Caddy from Authelia's forward-auth response
 (client-supplied values are stripped upstream).
 
@@ -20,6 +21,8 @@ DuckDB is single-writer: one connection guarded by a lock, single instance.
 """
 
 import os
+import socket
+import sys
 import threading
 import time
 
@@ -348,7 +351,19 @@ def share_todo(todo_id):
         return jsonify(todo_id=todo_id, username=grantee, permissions=permissions)
 
 
+def inherited_sockets():
+    if os.environ.get("LISTEN_PID") != str(os.getpid()):
+        return []
+    return [socket.socket(fileno=3 + i) for i in range(int(os.environ.get("LISTEN_FDS", "0")))]
+
+
 if __name__ == "__main__":
     from waitress import serve
 
-    serve(app, host="127.0.0.1", port=PORT, threads=4)
+    sockets = inherited_sockets()
+    if sockets:
+        serve(app, sockets=sockets, threads=4)
+    elif os.environ.get("KWEB_LISTEN") == "socket":
+        sys.exit("no listening socket from systemd; refusing to fall back to TCP")
+    else:
+        serve(app, host="127.0.0.1", port=PORT, threads=4)

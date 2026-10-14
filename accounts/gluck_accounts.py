@@ -1,7 +1,8 @@
 """gluck-accounts — mint lldap user accounts over an authenticated API.
 
-Trust model: this service binds to loopback and trusts the Remote-User /
-Remote-Groups headers because the only route to it is Caddy, which strips
+Trust model: this service listens only on the socket systemd hands it, which
+only Caddy can reach, and trusts the Remote-User / Remote-Groups headers
+because the only route to it is Caddy, which strips
 client-supplied Remote-* headers and sets them from Authelia's forward-auth
 response. Callers must hold the accounts-create group.
 """
@@ -9,7 +10,9 @@ response. Callers must hold the accounts-create group.
 import os
 import re
 import secrets
+import socket
 import subprocess
+import sys
 
 import requests
 from flask import Flask, jsonify, request
@@ -185,7 +188,19 @@ def create_account():
     )
 
 
+def inherited_sockets():
+    if os.environ.get("LISTEN_PID") != str(os.getpid()):
+        return []
+    return [socket.socket(fileno=3 + i) for i in range(int(os.environ.get("LISTEN_FDS", "0")))]
+
+
 if __name__ == "__main__":
     from waitress import serve
 
-    serve(app, host="127.0.0.1", port=PORT, threads=4)
+    sockets = inherited_sockets()
+    if sockets:
+        serve(app, sockets=sockets, threads=4)
+    elif os.environ.get("KWEB_LISTEN") == "socket":
+        sys.exit("no listening socket from systemd; refusing to fall back to TCP")
+    else:
+        serve(app, host="127.0.0.1", port=PORT, threads=4)
