@@ -17,6 +17,7 @@ Defends, against a stand-in lldap that records every mutation:
 import http.server
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -143,6 +144,17 @@ class Settings(unittest.TestCase):
         body = r.get_data(as_text=True)
         self.assertIn('<meta name="referrer" content="strict-origin">', body)
         self.assertNotIn("no-referrer", body)
+
+    def test_password_managers_are_told_these_are_profile_fields(self):
+        body = self.get("/").get_data(as_text=True)
+        fields = re.findall(r"<input [^>]*>", body)
+        typed = [f for f in fields if 'type="radio"' not in f and 'type="hidden"' not in f]
+        self.assertEqual(len(typed), 2, typed)
+        for field, hint in zip(typed, ("name", "email")):
+            self.assertIn(f'autocomplete="{hint}"', field)
+            self.assertIn("data-1p-ignore", field)
+        self.assertNotIn('type="password"', body)
+        self.assertNotIn("username", " ".join(fields))
 
     def test_identity_is_required(self):
         self.assertEqual(self.get("/", user=None).status_code, 401)
