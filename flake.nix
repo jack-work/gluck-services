@@ -221,6 +221,12 @@
                 requiredGroups = [ "accounts-create" ];
                 proxySocket = "gluck-accounts.service";
               };
+              services.kelliher-web.uriRedactions = lib.mkIf acctCfg.enable [
+                {
+                  pattern = "/email/confirm\\?t=[A-Za-z0-9_-]+";
+                  replacement = "/email/confirm?t=REDACTED";
+                }
+              ];
               services.kelliher-web.sites.gluck-settings = lib.mkIf acctCfg.enable {
                 subdomains = siteCfg.settingsSubdomains;
                 requireAuth = true;

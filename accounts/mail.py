@@ -8,6 +8,7 @@ HOST = os.environ.get("SETTINGS_SMTP_HOST", "email-smtp.us-east-1.amazonaws.com"
 PORT = int(os.environ.get("SETTINGS_SMTP_PORT", "587"))
 USER = os.environ.get("SETTINGS_SMTP_USER", "")
 SENDER = os.environ.get("SETTINGS_SMTP_SENDER", "kelliher.info <auth@kelliher.info>")
+SENDER_ADDRESS = SENDER.rsplit("<", 1)[-1].rstrip(">").strip()
 TIMEOUT = float(os.environ.get("SETTINGS_SMTP_TIMEOUT", "20"))
 
 
@@ -38,6 +39,6 @@ def send(to, subject, body):
         with smtplib.SMTP(HOST, PORT, timeout=TIMEOUT) as s:
             s.starttls(context=ssl.create_default_context())
             s.login(USER, _password())
-            s.send_message(msg)
+            s.send_message(msg, from_addr=SENDER_ADDRESS, to_addrs=[to])
     except (OSError, smtplib.SMTPException) as e:
         raise MailFailed(f"to {to}: {type(e).__name__}") from None

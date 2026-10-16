@@ -20,43 +20,43 @@ SCHEMES = ("light", "dark")
 DB_PATH = os.environ.get(
     "SETTINGS_DB", os.path.join(os.environ.get("STATE_DIRECTORY", "/var/lib/gluck-accounts"), "settings.db")
 )
-CONFIRM_TTL = 3600
+CONFIRM_TTL = 24 * 3600
 REQUESTS_PER_DAY = 3
 NAME_MAX = 64
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+EMAIL_RE = re.compile(r"^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$")
 CSP = (
     "default-src 'none'; style-src 'self' 'unsafe-inline'; font-src 'self'; "
     "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
 )
 
-REQUEST_NOTICE = """Hello {who},
+OLD_SIDE = """Hello {who},
 
-Someone signed in as {who} on kelliher.info asked to change the email
-address on the account from
-
-  {old}
-
-to
+Someone signed in as {who} on kelliher.info asked to move the account's
+email address from this one to
 
   {new}
 
-Nothing has changed yet. The change happens only if the link sent to the
-new address is opened and confirmed within an hour.
+That address is where password resets and sign-in codes go, so the move
+needs this address to agree. If you asked for it, open this link while
+signed in and press Confirm:
 
-If this was not you, the account's password is known to someone else.
-Tell Jack, and do not confirm anything.
+  {url}
+
+If you did not, do nothing and nothing changes, and tell Jack: someone
+holds a signed-in session for your account.
+
+The link works once, for a day. The new address has to confirm too.
 """
 
-CONFIRM = """Hello {who},
+NEW_SIDE = """Hello {who},
 
 To make this the email address for the kelliher.info account {who},
 open this link while signed in and press Confirm:
 
   {url}
 
-The link works once, for an hour. Password resets and sign-in codes will
-come here afterwards. If you did not ask for this, ignore it and nothing
-changes.
+The link works once, for a day. The account's current address has to
+confirm too. If you did not ask for this, ignore it and nothing changes.
 """
 
 CHANGED_NOTICE = """Hello {who},
@@ -69,8 +69,8 @@ to
 
   {new}
 
-Password resets and sign-in codes now go to the new address. If this was
-not you, tell Jack.
+after both addresses confirmed. Password resets and sign-in codes now go
+to the new address.
 """
 
 
@@ -86,9 +86,10 @@ class Store:
             self.conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
             self.conn.execute(
                 "CREATE TABLE IF NOT EXISTS email_change ("
-                " token_hash TEXT PRIMARY KEY, username TEXT NOT NULL, old_email TEXT NOT NULL,"
-                " new_email TEXT NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL,"
-                " state TEXT NOT NULL DEFAULT 'pending')"
+                " id INTEGER PRIMARY KEY, username TEXT NOT NULL, old_email TEXT NOT NULL,"
+                " new_email TEXT NOT NULL, old_hash TEXT NOT NULL UNIQUE, new_hash TEXT NOT NULL UNIQUE,"
+                " old_ok INTEGER NOT NULL DEFAULT 0, new_ok INTEGER NOT NULL DEFAULT 0,"
+                " created INTEGER NOT NULL, expires INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'pending')"
             )
         return self.conn
 
@@ -102,41 +103,53 @@ class Store:
     def pending(self, username, now):
         with self.lock:
             return self.db.execute(
-                "SELECT new_email, expires FROM email_change"
+                "SELECT new_email, old_ok, new_ok FROM email_change"
                 " WHERE username = ? AND state = 'pending' AND expires > ? ORDER BY created DESC LIMIT 1",
                 (username, now),
             ).fetchone()
 
-    def open(self, token_hash, username, old, new, now):
+    def open(self, username, old, new, old_hash, new_hash, now):
         with self.lock:
             self.db.execute("BEGIN IMMEDIATE")
             self.db.execute(
                 "UPDATE email_change SET state = 'superseded' WHERE username = ? AND state = 'pending'",
                 (username,),
             )
-            self.db.execute(
-                "INSERT INTO email_change (token_hash, username, old_email, new_email, created, expires)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (token_hash, username, old, new, now, now + CONFIRM_TTL),
+            cur = self.db.execute(
+                "INSERT INTO email_change (username, old_email, new_email, old_hash, new_hash, created, expires)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (username, old, new, old_hash, new_hash, now, now + CONFIRM_TTL),
             )
             self.db.execute("COMMIT")
+            return cur.lastrowid
 
-    def drop(self, token_hash):
+    def drop(self, change_id):
         with self.lock:
-            self.db.execute("DELETE FROM email_change WHERE token_hash = ?", (token_hash,))
+            self.db.execute("DELETE FROM email_change WHERE id = ?", (change_id,))
 
-    def claim(self, token_hash, username, now):
+    def confirm(self, token_hash, username, now):
         with self.lock:
             self.db.execute("BEGIN IMMEDIATE")
             row = self.db.execute(
-                "SELECT old_email, new_email FROM email_change"
-                " WHERE token_hash = ? AND username = ? AND state = 'pending' AND expires > ?",
-                (token_hash, username, now),
+                "SELECT id, old_email, new_email, old_hash = ?, old_ok, new_ok FROM email_change"
+                " WHERE (old_hash = ? OR new_hash = ?) AND username = ? AND state = 'pending' AND expires > ?",
+                (token_hash, token_hash, token_hash, username, now),
             ).fetchone()
-            if row:
-                self.db.execute("UPDATE email_change SET state = 'used' WHERE token_hash = ?", (token_hash,))
+            if row is None:
+                self.db.execute("COMMIT")
+                return None
+            change_id, old, new, is_old, old_ok, new_ok = row
+            if (old_ok if is_old else new_ok):
+                self.db.execute("COMMIT")
+                return None
+            old_ok, new_ok = (1, new_ok) if is_old else (old_ok, 1)
+            done = old_ok and new_ok
+            self.db.execute(
+                "UPDATE email_change SET old_ok = ?, new_ok = ?, state = ? WHERE id = ?",
+                (old_ok, new_ok, "used" if done else "pending", change_id),
+            )
             self.db.execute("COMMIT")
-            return row
+            return old, new, bool(done)
 
 
 def digest(token):
@@ -200,6 +213,9 @@ def make_blueprint(lldap_token, gql, caller):
                 display_name=account["displayName"],
                 email=account["email"],
                 pending=pending[0] if pending else None,
+                waiting_for=None if not pending else ("the old address" if not pending[1] and pending[2]
+                                                      else "the new address" if pending[1] and not pending[2]
+                                                      else "both addresses"),
                 current=scheme if scheme in SCHEMES else "system",
                 scheme=scheme if scheme in SCHEMES else None,
                 notice=notice,
@@ -258,25 +274,26 @@ def make_blueprint(lldap_token, gql, caller):
         if new is None:
             return page(username, 400, error="That is not an email address.")
         token = lldap_token()
-        old = user(token, username)["email"]
-        if new == (old or "").lower():
+        old = (user(token, username)["email"] or "").strip()
+        if not old:
+            return page(username, 409, error="This account has no address to confirm from. Ask Jack to set one.")
+        if new == old.lower():
             return page(username, 400, error="That is already the address on this account.")
         if store.recent(username, now) >= REQUESTS_PER_DAY:
             return page(username, 429, error="Too many email changes today. Try again tomorrow.")
         if email_taken(token, new, username):
             return page(username, 400, error="That address cannot be used for this account.")
-        secret = secrets.token_urlsafe(32)
-        hashed = digest(secret)
-        store.open(hashed, username, old, new, now)
+        old_secret, new_secret = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+        change_id = store.open(username, old, new, digest(old_secret), digest(new_secret), now)
         try:
-            mail.send(old, "An email change was requested on kelliher.info",
-                      REQUEST_NOTICE.format(who=username, old=old, new=new))
+            mail.send(old, "Confirm moving your kelliher.info email address",
+                      OLD_SIDE.format(who=username, new=new, url=f"{ORIGIN}/email/confirm?t={old_secret}"))
             mail.send(new, "Confirm your new kelliher.info email address",
-                      CONFIRM.format(who=username, url=f"{ORIGIN}/email/confirm?t={secret}"))
+                      NEW_SIDE.format(who=username, url=f"{ORIGIN}/email/confirm?t={new_secret}"))
         except mail.MailFailed as e:
-            store.drop(hashed)
+            store.drop(change_id)
             current_app.logger.error("settings: %s email change not opened: %s", username, e)
-            return page(username, 502, error="The confirmation could not be sent. Nothing has changed.")
+            return page(username, 502, error="The confirmations could not be sent. Nothing has changed.")
         current_app.logger.info("settings: %s asked to change email", username)
         return redirect("/?done=email-sent", 303)
 
@@ -291,12 +308,15 @@ def make_blueprint(lldap_token, gql, caller):
     def confirm():
         username = who()
         same_origin()
-        row = store.claim(digest(request.form.get("t", "")), username, int(time.time()))
-        if row is None:
+        result = store.confirm(digest(request.form.get("t", "")), username, int(time.time()))
+        if result is None:
             return page(username, 400, error="That confirmation link is not valid for this account. Nothing has changed.")
-        old, new = row
+        old, new, done = result
+        if not done:
+            current_app.logger.info("settings: %s confirmed one side of an email change", username)
+            return redirect("/?done=email-half", 303)
         token = lldap_token()
-        if (user(token, username)["email"] or "") != old:
+        if (user(token, username)["email"] or "").strip() != old:
             return page(username, 409, error="The address changed in the meantime. Nothing has changed; ask again.")
         update(token, username, email=new)
         current_app.logger.info("settings: %s changed email", username)

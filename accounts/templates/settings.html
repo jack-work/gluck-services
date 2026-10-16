@@ -5,7 +5,8 @@
   <p class="who">{{ username }}</p>
   {% if error %}<p class="note error" role="alert">{{ error }}</p>
   {% elif notice == "name" %}<p class="note">Your display name is saved.</p>
-  {% elif notice == "email-sent" %}<p class="note">A confirmation link is on its way to the new address. Your old address has been told.</p>
+  {% elif notice == "email-sent" %}<p class="note">Links are on their way to both addresses. The change happens when both are confirmed.</p>
+  {% elif notice == "email-half" %}<p class="note">One address has confirmed. The change happens when the other one does too.</p>
   {% elif notice == "email" %}<p class="note">Your email address is changed.</p>
   {% elif notice == "appearance" %}<p class="note">Appearance saved for every kelliher.info page.</p>{% endif %}
 
@@ -21,11 +22,11 @@
   <section>
     <h2>Email</h2>
     <p>Password resets and sign-in codes go to <span class="value">{{ email or "no address" }}</span>.</p>
-    {% if pending %}<p class="pending">Waiting for confirmation from <span class="value">{{ pending }}</span>.</p>{% endif %}
+    {% if pending %}<p class="pending">Moving to <span class="value">{{ pending }}</span>: waiting for {{ waiting_for }} to confirm.</p>{% endif %}
     <form method="post" action="/email">
       <label for="email">New address</label>
       <input id="email" name="email" type="email" maxlength="254" required autocomplete="email">
-      <p>We send a link to the new address and tell the old one. Nothing changes until the link is confirmed.</p>
+      <p>We send a link to the new address and one to the current address. Nothing changes until both are confirmed.</p>
       <button type="submit">Send confirmation</button>
     </form>
   </section>

@@ -4,9 +4,10 @@ email address and appearance, and nothing else.
 Defends, against a stand-in lldap that records every mutation:
   - the page and every write are for Remote-User's own account only
   - a write needs Origin https://settings.kelliher.info (no cross-site POST)
-  - an email change reaches lldap only after the link mailed to the NEW
-    address is confirmed, by the same user, once, within the hour; the OLD
-    address is told when it is asked for and again when it happens
+  - an email change reaches lldap only after BOTH the current address and the
+    new one confirm their own link, by the same signed-in user, once each,
+    within a day; a stolen session alone, which controls only the new
+    address, cannot complete it
   - opening the link (GET) changes nothing, so a mail scanner cannot confirm
   - the token is never stored in the clear
   - the appearance cookie carries only light or dark, Domain=kelliher.info
@@ -84,6 +85,7 @@ def fake_send(to, subject, body):
     SENT.append((to, subject, body))
 
 
+REAL_SEND = mail.send
 mail.send = fake_send
 
 HOST = "http://settings.kelliher.info"
@@ -119,9 +121,10 @@ class Settings(unittest.TestCase):
         return self.c.post(path, data=data, headers=h, base_url=HOST)
 
     def ask(self, email="alice@new.example", user="alice"):
+        before = len(SENT)
         r = self.post("/email", {"email": email}, user=user)
-        confirm = [b for to, _, b in SENT if "/email/confirm?t=" in b]
-        return r, (token_from(confirm[-1]) if confirm else None)
+        links = {to: token_from(b) for to, _, b in SENT[before:] if "/email/confirm?t=" in b}
+        return r, links
 
     def test_page_shows_only_the_callers_account(self):
         r = self.get("/")
@@ -176,69 +179,100 @@ class Settings(unittest.TestCase):
         self.assertEqual(self.post("/appearance", {"scheme": "sepia"}).status_code, 400)
         self.assertEqual(MUTATIONS, [])
 
-    def test_asking_mails_new_and_old_and_changes_nothing(self):
-        r, tok = self.ask()
+    def test_asking_mails_both_sides_and_changes_nothing(self):
+        r, links = self.ask()
         self.assertEqual(r.status_code, 303)
         self.assertEqual([to for to, _, _ in SENT], ["alice@old.example", "alice@new.example"])
+        old_tok, new_tok = links["alice@old.example"], links["alice@new.example"]
+        self.assertNotEqual(old_tok, new_tok)
+        self.assertNotIn(new_tok, SENT[0][2])
+        self.assertNotIn(old_tok, SENT[1][2])
         self.assertIn("alice@new.example", SENT[0][2])
-        self.assertNotIn(tok, SENT[0][2])
+        self.assertEqual(MUTATIONS, [])
+        raw = Path(os.environ["SETTINGS_DB"]).read_bytes().decode("latin-1")
+        self.assertNotIn(old_tok, raw)
+        self.assertNotIn(new_tok, raw)
+
+    def test_opening_a_link_changes_nothing(self):
+        _, links = self.ask()
+        for tok in links.values():
+            self.assertEqual(self.get("/email/confirm?t=" + tok).status_code, 200)
+        self.assertEqual(MUTATIONS, [])
+
+    def test_a_stolen_session_confirming_the_new_side_changes_nothing(self):
+        _, links = self.ask("thief@evil.example")
+        r = self.post("/email/confirm", {"t": links["thief@evil.example"]})
+        self.assertEqual(r.status_code, 303)
+        self.assertIn("email-half", r.headers["Location"])
         self.assertEqual(MUTATIONS, [])
         self.assertEqual(USERS["alice"]["email"], "alice@old.example")
-        stored = sqlite3.connect(os.environ["SETTINGS_DB"]).execute("SELECT token_hash FROM email_change").fetchall()
-        self.assertEqual(len(stored), 1)
-        self.assertNotEqual(stored[0][0], tok)
-        self.assertNotIn(tok, Path(os.environ["SETTINGS_DB"]).read_bytes().decode("latin-1"))
-
-    def test_opening_the_link_changes_nothing(self):
-        _, tok = self.ask()
-        r = self.get("/email/confirm?t=" + tok)
-        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.post("/email/confirm", {"t": links["thief@evil.example"]}).status_code, 400)
         self.assertEqual(MUTATIONS, [])
 
-    def test_confirming_changes_the_address_once_and_tells_the_old_one(self):
-        _, tok = self.ask()
-        SENT.clear()
-        r = self.post("/email/confirm", {"t": tok})
-        self.assertEqual(r.status_code, 303)
-        self.assertEqual(MUTATIONS, [{"id": "alice", "email": "alice@new.example"}])
-        self.assertEqual([to for to, _, _ in SENT], ["alice@old.example"])
-        self.assertIn("was changed", SENT[0][1])
-        self.assertEqual(self.post("/email/confirm", {"t": tok}).status_code, 400)
+    def test_both_sides_in_either_order_change_it_once_and_tell_the_old_one(self):
+        for order in (("alice@new.example", "alice@old.example"), ("alice@old.example", "alice@new.example")):
+            self.setUp()
+            _, links = self.ask()
+            SENT.clear()
+            self.assertIn("email-half", self.post("/email/confirm", {"t": links[order[0]]}).headers["Location"])
+            self.assertEqual(MUTATIONS, [])
+            r = self.post("/email/confirm", {"t": links[order[1]]})
+            self.assertEqual(r.status_code, 303, order)
+            self.assertEqual(MUTATIONS, [{"id": "alice", "email": "alice@new.example"}])
+            self.assertEqual([to for to, _, _ in SENT], ["alice@old.example"])
+            self.assertIn("was changed", SENT[0][1])
+            for tok in links.values():
+                self.assertEqual(self.post("/email/confirm", {"t": tok}).status_code, 400)
+            self.assertEqual(len(MUTATIONS), 1)
+
+    def test_another_user_cannot_confirm_and_does_not_burn_the_links(self):
+        _, links = self.ask()
+        for tok in links.values():
+            self.assertEqual(self.post("/email/confirm", {"t": tok}, user="bob").status_code, 400)
+        self.assertEqual(MUTATIONS, [])
+        for tok in links.values():
+            self.assertEqual(self.post("/email/confirm", {"t": tok}).status_code, 303)
         self.assertEqual(len(MUTATIONS), 1)
 
-    def test_another_user_cannot_confirm_and_does_not_burn_the_link(self):
-        _, tok = self.ask()
-        self.assertEqual(self.post("/email/confirm", {"t": tok}, user="bob").status_code, 400)
-        self.assertEqual(MUTATIONS, [])
-        self.assertEqual(self.post("/email/confirm", {"t": tok}).status_code, 303)
-
     def test_a_wrong_or_expired_token_is_refused(self):
-        _, tok = self.ask()
+        _, links = self.ask()
+        tok = links["alice@old.example"]
         self.assertEqual(self.post("/email/confirm", {"t": tok + "x"}).status_code, 400)
         self.assertEqual(self.post("/email/confirm", {"t": ""}).status_code, 400)
         db = sqlite3.connect(os.environ["SETTINGS_DB"])
         db.execute("UPDATE email_change SET expires = 0")
         db.commit()
-        self.assertEqual(self.post("/email/confirm", {"t": tok}).status_code, 400)
+        for tok in links.values():
+            self.assertEqual(self.post("/email/confirm", {"t": tok}).status_code, 400)
         self.assertEqual(MUTATIONS, [])
 
-    def test_a_newer_request_supersedes_the_older_link(self):
+    def test_a_newer_request_supersedes_the_older_links(self):
         _, first = self.ask("alice@one.example")
         _, second = self.ask("alice@two.example")
-        self.assertEqual(self.post("/email/confirm", {"t": first}).status_code, 400)
-        self.assertEqual(self.post("/email/confirm", {"t": second}).status_code, 303)
+        for tok in first.values():
+            self.assertEqual(self.post("/email/confirm", {"t": tok}).status_code, 400)
+        for tok in second.values():
+            self.assertEqual(self.post("/email/confirm", {"t": tok}).status_code, 303)
         self.assertEqual(MUTATIONS, [{"id": "alice", "email": "alice@two.example"}])
 
-    def test_a_change_in_the_meantime_voids_the_link(self):
-        _, tok = self.ask()
+    def test_a_change_in_the_meantime_voids_the_links(self):
+        _, links = self.ask()
+        self.post("/email/confirm", {"t": links["alice@new.example"]})
         USERS["alice"]["email"] = "alice@elsewhere.example"
-        self.assertEqual(self.post("/email/confirm", {"t": tok}).status_code, 409)
+        self.assertEqual(self.post("/email/confirm", {"t": links["alice@old.example"]}).status_code, 409)
         self.assertEqual(MUTATIONS, [])
 
     def test_bad_same_or_taken_addresses_mail_nobody(self):
-        for email in ("not-an-address", "alice@old.example", "ALICE@OLD.EXAMPLE", "bob@example.com"):
+        for email in ("not-an-address", "a,b@c.example", '"a"@c.example', "a b@c.example", "a@c",
+                      "alice@old.example", "ALICE@OLD.EXAMPLE", "bob@example.com"):
             r, _ = self.ask(email)
             self.assertEqual(r.status_code, 400, email)
+        self.assertEqual(SENT, [])
+
+    def test_an_account_without_an_address_cannot_self_serve(self):
+        USERS["alice"]["email"] = ""
+        r, _ = self.ask()
+        self.assertEqual(r.status_code, 409)
         self.assertEqual(SENT, [])
 
     def test_three_requests_a_day(self):
@@ -248,11 +282,11 @@ class Settings(unittest.TestCase):
         self.assertEqual(self.ask("alice@n4.example")[0].status_code, 429)
         self.assertEqual(SENT, [])
 
-    def test_if_the_old_address_cannot_be_told_nothing_is_opened(self):
+    def test_if_the_old_address_cannot_be_mailed_nothing_is_opened(self):
         FAIL_MAIL["to"] = "alice@old.example"
-        r, tok = self.ask()
+        r, links = self.ask()
         self.assertEqual(r.status_code, 502)
-        self.assertIsNone(tok)
+        self.assertEqual(links, {})
         self.assertEqual(sqlite3.connect(os.environ["SETTINGS_DB"]).execute(
             "SELECT count(*) FROM email_change WHERE state = 'pending'").fetchone()[0], 0)
 
@@ -261,6 +295,43 @@ class Settings(unittest.TestCase):
         self.assertIn('<html lang="en" data-scheme="dark">', self.get("/").get_data(as_text=True))
         self.c.set_cookie("zanni-scheme", '"><b>', domain="settings.kelliher.info")
         self.assertNotIn("data-scheme", self.get("/").get_data(as_text=True).split("<head>")[0])
+
+
+class Envelope(unittest.TestCase):
+    def test_the_recipient_is_given_as_the_envelope_not_parsed_from_a_header(self):
+        seen = {}
+
+        class FakeSMTP:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def starttls(self, **k):
+                pass
+
+            def login(self, *a):
+                pass
+
+            def send_message(self, msg, from_addr=None, to_addrs=None):
+                seen.update(from_addr=from_addr, to_addrs=to_addrs)
+
+        creds = tempfile.mkdtemp()
+        Path(creds, "smtp_password").write_text("x")
+        os.environ["CREDENTIALS_DIRECTORY"] = creds
+        real_smtp = mail.smtplib.SMTP
+        mail.smtplib.SMTP = FakeSMTP
+        try:
+            REAL_SEND("a@b.example", "s", "body")
+        finally:
+            mail.smtplib.SMTP = real_smtp
+            del os.environ["CREDENTIALS_DIRECTORY"]
+        self.assertEqual(seen["to_addrs"], ["a@b.example"])
+        self.assertEqual(seen["from_addr"], "auth@kelliher.info")
 
 
 if __name__ == "__main__":
