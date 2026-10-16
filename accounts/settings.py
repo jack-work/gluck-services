@@ -127,6 +127,14 @@ class Store:
         with self.lock:
             self.db.execute("DELETE FROM email_change WHERE id = ?", (change_id,))
 
+    def describe(self, token_hash, username, now):
+        with self.lock:
+            return self.db.execute(
+                "SELECT old_email, new_email FROM email_change"
+                " WHERE (old_hash = ? OR new_hash = ?) AND username = ? AND state = 'pending' AND expires > ?",
+                (token_hash, token_hash, username, now),
+            ).fetchone()
+
     def confirm(self, token_hash, username, now):
         with self.lock:
             self.db.execute("BEGIN IMMEDIATE")
@@ -301,7 +309,10 @@ def make_blueprint(lldap_token, gql, caller):
     def confirm_form():
         username = who()
         secret = request.args.get("t", "")
-        return render_template("confirm.html", username=username, token=secret,
+        change = store.describe(digest(secret), username, int(time.time()))
+        if change is None:
+            return page(username, 400, error="That confirmation link is not valid for this account. Nothing has changed.")
+        return render_template("confirm.html", username=username, token=secret, old=change[0], new=change[1],
                                scheme=request.cookies.get(COOKIE) if request.cookies.get(COOKIE) in SCHEMES else None)
 
     @bp.post("/email/confirm")

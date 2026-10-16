@@ -199,6 +199,17 @@ class Settings(unittest.TestCase):
             self.assertEqual(self.get("/email/confirm?t=" + tok).status_code, 200)
         self.assertEqual(MUTATIONS, [])
 
+    def test_the_confirm_page_shows_where_the_address_would_move(self):
+        _, links = self.ask("thief@evil.example")
+        for tok in links.values():
+            body = self.get("/email/confirm?t=" + tok).get_data(as_text=True)
+            self.assertIn("thief@evil.example", body)
+            self.assertIn("alice@old.example", body)
+        r = self.get("/email/confirm?t=" + links["alice@old.example"], user="bob")
+        self.assertEqual(r.status_code, 400)
+        self.assertNotIn("thief@evil.example", r.get_data(as_text=True))
+        self.assertEqual(self.get("/email/confirm?t=nonsense").status_code, 400)
+
     def test_a_stolen_session_confirming_the_new_side_changes_nothing(self):
         _, links = self.ask("thief@evil.example")
         r = self.post("/email/confirm", {"t": links["thief@evil.example"]})

@@ -4,7 +4,8 @@
   <h1>Confirm</h1>
   <p class="who">{{ username }}</p>
   <section>
-    <p>Confirm the email change for <span class="value">{{ username }}</span>? Both the current and the new address have to confirm before anything changes.</p>
+    <p>Move <span class="value">{{ username }}</span> from <span class="value">{{ old }}</span> to <span class="value">{{ new }}</span>?</p>
+    <p>Password resets and sign-in codes would go to <span class="value">{{ new }}</span>. If you do not recognise it, do not confirm, and tell Jack. Both addresses have to confirm before anything changes.</p>
     <form method="post" action="/email/confirm">
       <input type="hidden" name="t" value="{{ token }}">
       <button type="submit">Confirm</button>
