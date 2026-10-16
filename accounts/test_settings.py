@@ -137,6 +137,13 @@ class Settings(unittest.TestCase):
         self.assertIn("default-src 'none'", r.headers["Content-Security-Policy"])
         self.assertEqual(r.headers["Cache-Control"], "no-store")
 
+    def test_the_page_lets_the_browser_send_its_origin(self):
+        r = self.get("/")
+        self.assertEqual(r.headers["Referrer-Policy"], "strict-origin")
+        body = r.get_data(as_text=True)
+        self.assertIn('<meta name="referrer" content="strict-origin">', body)
+        self.assertNotIn("no-referrer", body)
+
     def test_identity_is_required(self):
         self.assertEqual(self.get("/", user=None).status_code, 401)
         self.assertEqual(self.post("/name", {"display_name": "X"}, user=None).status_code, 401)
@@ -268,7 +275,7 @@ class Settings(unittest.TestCase):
         tok = links["alice@old.example"]
         r = self.c.head("/email/confirm?t=" + tok, base_url=HOST)
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.headers["Referrer-Policy"], "no-referrer")
+        self.assertEqual(r.headers["Referrer-Policy"], "strict-origin")
         self.assertEqual(self.get("/email/confirm?t=" + tok, user=None).status_code, 200)
         self.assertEqual(MUTATIONS, [])
 
@@ -282,7 +289,7 @@ class Settings(unittest.TestCase):
         tok = links["alice@old.example"]
         for r in (self.get("/email/confirm?t=" + tok, user=None), self.post("/email/confirm", {"t": tok}, user=None),
                   self.get("/email/confirm?t=nonsense", user=None)):
-            self.assertEqual(r.headers["Referrer-Policy"], "no-referrer")
+            self.assertEqual(r.headers["Referrer-Policy"], "strict-origin")
             self.assertTrue(r.headers["Content-Security-Policy"].startswith("default-src 'none'"))
             self.assertEqual(r.headers["Cache-Control"], "no-store")
 
