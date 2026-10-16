@@ -85,7 +85,7 @@
 
             settingsHost = lib.mkOption {
               type = lib.types.str;
-              default = "settings.kelliher.info";
+              default = "me.kelliher.info";
               description = "Hostname of the self-service settings site this service also answers";
             };
 
@@ -118,7 +118,7 @@
             };
             settingsSubdomains = lib.mkOption {
               type = lib.types.listOf lib.types.str;
-              default = [ "settings" ];
+              default = [ "me" ];
               description = ''
                 Subdomain labels for the self-service settings site, served
                 by gluck-accounts to any signed-in user.

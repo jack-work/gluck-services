@@ -1,9 +1,9 @@
-"""settings.kelliher.info: a signed-in user changes their own display name,
+"""me.kelliher.info: a signed-in user changes their own display name,
 email address and appearance, and nothing else.
 
 Defends, against a stand-in lldap that records every mutation:
   - the page and every write are for Remote-User's own account only
-  - a write needs Origin https://settings.kelliher.info (no cross-site POST)
+  - a write needs Origin https://me.kelliher.info (no cross-site POST)
   - an email change reaches lldap only after BOTH the current address and the
     new one confirm their own link, by the same signed-in user, once each,
     within a day; a stolen session alone, which controls only the new
@@ -88,8 +88,8 @@ def fake_send(to, subject, body):
 REAL_SEND = mail.send
 mail.send = fake_send
 
-HOST = "http://settings.kelliher.info"
-ORIGIN = {"Origin": "https://settings.kelliher.info"}
+HOST = "http://me.kelliher.info"
+ORIGIN = {"Origin": "https://me.kelliher.info"}
 
 
 def token_from(body):
@@ -302,9 +302,9 @@ class Settings(unittest.TestCase):
             "SELECT count(*) FROM email_change WHERE state = 'pending'").fetchone()[0], 0)
 
     def test_the_page_renders_the_pinned_scheme(self):
-        self.c.set_cookie("zanni-scheme", "dark", domain="settings.kelliher.info")
+        self.c.set_cookie("zanni-scheme", "dark", domain="me.kelliher.info")
         self.assertIn('<html lang="en" data-scheme="dark">', self.get("/").get_data(as_text=True))
-        self.c.set_cookie("zanni-scheme", '"><b>', domain="settings.kelliher.info")
+        self.c.set_cookie("zanni-scheme", '"><b>', domain="me.kelliher.info")
         self.assertNotIn("data-scheme", self.get("/").get_data(as_text=True).split("<head>")[0])
 
 

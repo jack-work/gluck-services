@@ -11,7 +11,7 @@ from flask import Blueprint, abort, current_app, redirect, render_template, requ
 
 import mail
 
-HOST = os.environ.get("SETTINGS_HOST", "settings.kelliher.info")
+HOST = os.environ.get("SETTINGS_HOST", "me.kelliher.info")
 ORIGIN = f"https://{HOST}"
 COOKIE = "zanni-scheme"
 COOKIE_DOMAIN = os.environ.get("SETTINGS_COOKIE_DOMAIN", "kelliher.info")
