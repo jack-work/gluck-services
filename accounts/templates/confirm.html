@@ -1,0 +1,15 @@
+{% include "_head.html" %}
+<body class="gesso">
+<main>
+  <h1>Confirm</h1>
+  <p class="who">{{ username }}</p>
+  <section>
+    <p>Make the address this link was sent to the email for <span class="value">{{ username }}</span>?</p>
+    <form method="post" action="/email/confirm">
+      <input type="hidden" name="t" value="{{ token }}">
+      <button type="submit">Confirm</button>
+    </form>
+  </section>
+</main>
+</body>
+</html>

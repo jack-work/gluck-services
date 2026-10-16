@@ -4,7 +4,9 @@ Trust model: this service listens only on the socket systemd hands it, which
 only Caddy can reach, and trusts the Remote-User / Remote-Groups headers
 because the only route to it is Caddy, which strips
 client-supplied Remote-* headers and sets them from Authelia's forward-auth
-response. Callers must hold the accounts-create group.
+response. Callers of the /accounts API must hold the accounts-create group.
+On the settings host (settings.py) any signed-in user reads and edits only
+their own account.
 """
 
 import os
@@ -186,6 +188,22 @@ def create_account():
         ),
         201,
     )
+
+
+import settings  # noqa: E402
+
+app.register_blueprint(settings.make_blueprint(lldap_token, gql, caller))
+
+
+@app.before_request
+def one_site_per_host():
+    on_settings_host = request.host.split(":", 1)[0].lower() == settings.HOST
+    is_settings = (request.endpoint or "").startswith("settings.")
+    if request.endpoint == "static":
+        return None
+    if on_settings_host != is_settings:
+        return jsonify(error="not found"), 404
+    return None
 
 
 def inherited_sockets():
