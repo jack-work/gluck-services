@@ -263,6 +263,15 @@ class Settings(unittest.TestCase):
         self.assertEqual(self.post("/email/confirm", {"t": tok}, user=None).status_code, 400)
         self.assertEqual(MUTATIONS, [])
 
+    def test_a_head_prefetch_reads_the_link_without_using_it(self):
+        _, links = self.ask()
+        tok = links["alice@old.example"]
+        r = self.c.head("/email/confirm?t=" + tok, base_url=HOST)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers["Referrer-Policy"], "no-referrer")
+        self.assertEqual(self.get("/email/confirm?t=" + tok, user=None).status_code, 200)
+        self.assertEqual(MUTATIONS, [])
+
     def test_links_live_one_hour(self):
         self.ask()
         db = sqlite3.connect(os.environ["SETTINGS_DB"])
