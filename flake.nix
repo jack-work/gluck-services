@@ -232,6 +232,7 @@
                 requireAuth = true;
                 requiredGroups = [ ];
                 proxySocket = "gluck-accounts.service";
+                selfAuthorizingPaths = [ { path = "/email/confirm"; } ];
               };
             })
           ];

@@ -2,7 +2,8 @@
 email address and appearance, and nothing else.
 
 Defends, against a stand-in lldap that records every mutation:
-  - the page and every write are for Remote-User's own account only
+  - the page and every write are for Remote-User's own account only, except
+    the email confirmation, which the two mailed tokens alone authorize
   - a write needs Origin https://me.kelliher.info (no cross-site POST)
   - an email change reaches lldap only after BOTH the current address and the
     new one confirm their own link, by the same signed-in user, once each,
@@ -205,16 +206,14 @@ class Settings(unittest.TestCase):
             body = self.get("/email/confirm?t=" + tok).get_data(as_text=True)
             self.assertIn("thief@evil.example", body)
             self.assertIn("alice@old.example", body)
-        r = self.get("/email/confirm?t=" + links["alice@old.example"], user="bob")
-        self.assertEqual(r.status_code, 400)
-        self.assertNotIn("thief@evil.example", r.get_data(as_text=True))
         self.assertEqual(self.get("/email/confirm?t=nonsense").status_code, 400)
+        self.assertEqual(self.get("/email/confirm?t=nonsense", user=None).status_code, 400)
 
     def test_a_stolen_session_confirming_the_new_side_changes_nothing(self):
         _, links = self.ask("thief@evil.example")
         r = self.post("/email/confirm", {"t": links["thief@evil.example"]})
-        self.assertEqual(r.status_code, 303)
-        self.assertIn("email-half", r.headers["Location"])
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("has confirmed", r.get_data(as_text=True))
         self.assertEqual(MUTATIONS, [])
         self.assertEqual(USERS["alice"]["email"], "alice@old.example")
         self.assertEqual(self.post("/email/confirm", {"t": links["thief@evil.example"]}).status_code, 400)
@@ -225,10 +224,11 @@ class Settings(unittest.TestCase):
             self.setUp()
             _, links = self.ask()
             SENT.clear()
-            self.assertIn("email-half", self.post("/email/confirm", {"t": links[order[0]]}).headers["Location"])
+            self.assertIn("has confirmed", self.post("/email/confirm", {"t": links[order[0]]}).get_data(as_text=True))
             self.assertEqual(MUTATIONS, [])
             r = self.post("/email/confirm", {"t": links[order[1]]})
-            self.assertEqual(r.status_code, 303, order)
+            self.assertEqual(r.status_code, 200, order)
+            self.assertIn("now uses alice@new.example", r.get_data(as_text=True))
             self.assertEqual(MUTATIONS, [{"id": "alice", "email": "alice@new.example"}])
             self.assertEqual([to for to, _, _ in SENT], ["alice@old.example"])
             self.assertIn("was changed", SENT[0][1])
@@ -236,14 +236,46 @@ class Settings(unittest.TestCase):
                 self.assertEqual(self.post("/email/confirm", {"t": tok}).status_code, 400)
             self.assertEqual(len(MUTATIONS), 1)
 
-    def test_another_user_cannot_confirm_and_does_not_burn_the_links(self):
+    # The confirm route sits outside forward_auth, so Remote-User there is
+    # whatever a client sends. Only the two tokens may decide the account.
+    def test_the_tokens_alone_decide_the_account(self):
         _, links = self.ask()
         for tok in links.values():
-            self.assertEqual(self.post("/email/confirm", {"t": tok}, user="bob").status_code, 400)
+            self.assertEqual(self.post("/email/confirm", {"t": tok}, user="bob").status_code, 200)
+        self.assertEqual(MUTATIONS, [{"id": "alice", "email": "alice@new.example"}])
+        self.assertEqual(USERS["bob"]["email"], "bob@example.com")
+
+    def test_a_reader_with_no_session_confirms_both_sides(self):
+        _, links = self.ask()
+        for tok in links.values():
+            body = self.get("/email/confirm?t=" + tok, user=None).get_data(as_text=True)
+            self.assertIn("alice@new.example", body)
         self.assertEqual(MUTATIONS, [])
         for tok in links.values():
-            self.assertEqual(self.post("/email/confirm", {"t": tok}).status_code, 303)
-        self.assertEqual(len(MUTATIONS), 1)
+            self.assertEqual(self.post("/email/confirm", {"t": tok}, user=None).status_code, 200)
+        self.assertEqual(MUTATIONS, [{"id": "alice", "email": "alice@new.example"}])
+
+    def test_one_side_alone_never_changes_it_and_cannot_be_reused(self):
+        _, links = self.ask("thief@evil.example")
+        tok = links["thief@evil.example"]
+        self.assertEqual(self.post("/email/confirm", {"t": tok}, user=None).status_code, 200)
+        self.assertEqual(self.get("/email/confirm?t=" + tok, user=None).status_code, 400)
+        self.assertEqual(self.post("/email/confirm", {"t": tok}, user=None).status_code, 400)
+        self.assertEqual(MUTATIONS, [])
+
+    def test_links_live_one_hour(self):
+        self.ask()
+        db = sqlite3.connect(os.environ["SETTINGS_DB"])
+        self.assertEqual(db.execute("SELECT expires - created FROM email_change").fetchall(), [(3600,)])
+
+    def test_the_confirm_pages_keep_the_token_on_this_origin(self):
+        _, links = self.ask()
+        tok = links["alice@old.example"]
+        for r in (self.get("/email/confirm?t=" + tok, user=None), self.post("/email/confirm", {"t": tok}, user=None),
+                  self.get("/email/confirm?t=nonsense", user=None)):
+            self.assertEqual(r.headers["Referrer-Policy"], "no-referrer")
+            self.assertTrue(r.headers["Content-Security-Policy"].startswith("default-src 'none'"))
+            self.assertEqual(r.headers["Cache-Control"], "no-store")
 
     def test_a_wrong_or_expired_token_is_refused(self):
         _, links = self.ask()
@@ -263,7 +295,7 @@ class Settings(unittest.TestCase):
         for tok in first.values():
             self.assertEqual(self.post("/email/confirm", {"t": tok}).status_code, 400)
         for tok in second.values():
-            self.assertEqual(self.post("/email/confirm", {"t": tok}).status_code, 303)
+            self.assertEqual(self.post("/email/confirm", {"t": tok}).status_code, 200)
         self.assertEqual(MUTATIONS, [{"id": "alice", "email": "alice@two.example"}])
 
     def test_a_change_in_the_meantime_voids_the_links(self):

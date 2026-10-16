@@ -20,7 +20,7 @@ SCHEMES = ("light", "dark")
 DB_PATH = os.environ.get(
     "SETTINGS_DB", os.path.join(os.environ.get("STATE_DIRECTORY", "/var/lib/gluck-accounts"), "settings.db")
 )
-CONFIRM_TTL = 24 * 3600
+CONFIRM_TTL = 3600
 REQUESTS_PER_DAY = 3
 NAME_MAX = 64
 EMAIL_RE = re.compile(r"^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$")
@@ -127,26 +127,27 @@ class Store:
         with self.lock:
             self.db.execute("DELETE FROM email_change WHERE id = ?", (change_id,))
 
-    def describe(self, token_hash, username, now):
+    def describe(self, token_hash, now):
         with self.lock:
             return self.db.execute(
-                "SELECT old_email, new_email FROM email_change"
-                " WHERE (old_hash = ? OR new_hash = ?) AND username = ? AND state = 'pending' AND expires > ?",
-                (token_hash, token_hash, username, now),
+                "SELECT username, old_email, new_email FROM email_change"
+                " WHERE (old_hash = ? OR new_hash = ?) AND state = 'pending' AND expires > ?"
+                " AND NOT (old_hash = ? AND old_ok) AND NOT (new_hash = ? AND new_ok)",
+                (token_hash, token_hash, now, token_hash, token_hash),
             ).fetchone()
 
-    def confirm(self, token_hash, username, now):
+    def confirm(self, token_hash, now):
         with self.lock:
             self.db.execute("BEGIN IMMEDIATE")
             row = self.db.execute(
-                "SELECT id, old_email, new_email, old_hash = ?, old_ok, new_ok FROM email_change"
-                " WHERE (old_hash = ? OR new_hash = ?) AND username = ? AND state = 'pending' AND expires > ?",
-                (token_hash, token_hash, token_hash, username, now),
+                "SELECT id, username, old_email, new_email, old_hash = ?, old_ok, new_ok FROM email_change"
+                " WHERE (old_hash = ? OR new_hash = ?) AND state = 'pending' AND expires > ?",
+                (token_hash, token_hash, token_hash, now),
             ).fetchone()
             if row is None:
                 self.db.execute("COMMIT")
                 return None
-            change_id, old, new, is_old, old_ok, new_ok = row
+            change_id, username, old, new, is_old, old_ok, new_ok = row
             if (old_ok if is_old else new_ok):
                 self.db.execute("COMMIT")
                 return None
@@ -157,7 +158,7 @@ class Store:
                 (old_ok, new_ok, "used" if done else "pending", change_id),
             )
             self.db.execute("COMMIT")
-            return old, new, bool(done)
+            return username, old, new, bool(done)
 
 
 def digest(token):
@@ -305,30 +306,34 @@ def make_blueprint(lldap_token, gql, caller):
         current_app.logger.info("settings: %s asked to change email", username)
         return redirect("/?done=email-sent", 303)
 
+    def scheme():
+        return request.cookies.get(COOKIE) if request.cookies.get(COOKIE) in SCHEMES else None
+
+    def outcome(status, heading, message):
+        return render_template("confirmed.html", heading=heading, message=message, scheme=scheme()), status
+
     @bp.get("/email/confirm")
     def confirm_form():
-        username = who()
         secret = request.args.get("t", "")
-        change = store.describe(digest(secret), username, int(time.time()))
+        change = store.describe(digest(secret), int(time.time()))
         if change is None:
-            return page(username, 400, error="That confirmation link is not valid for this account. Nothing has changed.")
-        return render_template("confirm.html", username=username, token=secret, old=change[0], new=change[1],
-                               scheme=request.cookies.get(COOKIE) if request.cookies.get(COOKIE) in SCHEMES else None)
+            return outcome(400, "Not valid", "That confirmation link is used, expired or replaced. Nothing has changed.")
+        username, old, new = change
+        return render_template("confirm.html", username=username, token=secret, old=old, new=new, scheme=scheme())
 
     @bp.post("/email/confirm")
     def confirm():
-        username = who()
         same_origin()
-        result = store.confirm(digest(request.form.get("t", "")), username, int(time.time()))
+        result = store.confirm(digest(request.form.get("t", "")), int(time.time()))
         if result is None:
-            return page(username, 400, error="That confirmation link is not valid for this account. Nothing has changed.")
-        old, new, done = result
+            return outcome(400, "Not valid", "That confirmation link is used, expired or replaced. Nothing has changed.")
+        username, old, new, done = result
         if not done:
             current_app.logger.info("settings: %s confirmed one side of an email change", username)
-            return redirect("/?done=email-half", 303)
+            return outcome(200, "Confirmed", "This address has confirmed. The change happens when the other address confirms too.")
         token = lldap_token()
         if (user(token, username)["email"] or "").strip() != old:
-            return page(username, 409, error="The address changed in the meantime. Nothing has changed; ask again.")
+            return outcome(409, "Not changed", "The address changed in the meantime. Nothing has changed; ask again.")
         update(token, username, email=new)
         current_app.logger.info("settings: %s changed email", username)
         try:
@@ -336,6 +341,6 @@ def make_blueprint(lldap_token, gql, caller):
                       CHANGED_NOTICE.format(who=username, old=old, new=new))
         except mail.MailFailed as e:
             current_app.logger.error("settings: %s changed email, notice to the old address failed: %s", username, e)
-        return redirect("/?done=email", 303)
+        return outcome(200, "Changed", f"{username} now uses {new}. A notice went to {old}.")
 
     return bp
