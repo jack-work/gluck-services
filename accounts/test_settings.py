@@ -136,6 +136,13 @@ class Settings(unittest.TestCase):
         self.assertIn("default-src 'none'", r.headers["Content-Security-Policy"])
         self.assertEqual(r.headers["Cache-Control"], "no-store")
 
+    def test_the_page_lets_the_browser_send_its_origin(self):
+        r = self.get("/")
+        self.assertEqual(r.headers["Referrer-Policy"], "same-origin")
+        body = r.get_data(as_text=True)
+        self.assertIn('<meta name="referrer" content="same-origin">', body)
+        self.assertNotIn("no-referrer", body)
+
     def test_identity_is_required(self):
         self.assertEqual(self.get("/", user=None).status_code, 401)
         self.assertEqual(self.post("/name", {"display_name": "X"}, user=None).status_code, 401)

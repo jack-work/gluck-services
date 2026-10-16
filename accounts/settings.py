@@ -236,7 +236,7 @@ def make_blueprint(lldap_token, gql, caller):
     def headers(resp):
         resp.headers["Content-Security-Policy"] = CSP
         resp.headers["Cache-Control"] = "no-store"
-        resp.headers["Referrer-Policy"] = "no-referrer"
+        resp.headers["Referrer-Policy"] = "same-origin"
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["X-Frame-Options"] = "DENY"
         return resp
