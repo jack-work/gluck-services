@@ -13,6 +13,8 @@ import mail
 
 HOST = os.environ.get("SETTINGS_HOST", "me.kelliher.info")
 ORIGIN = f"https://{HOST}"
+AUTH = os.environ.get("SETTINGS_AUTH_ORIGIN", "https://auth.kelliher.info")
+METHODS = f"{AUTH}/settings/two-factor-authentication"
 COOKIE = "zanni-scheme"
 COOKIE_DOMAIN = os.environ.get("SETTINGS_COOKIE_DOMAIN", "kelliher.info")
 COOKIE_AGE = 365 * 24 * 3600
@@ -229,6 +231,8 @@ def make_blueprint(lldap_token, gql, caller):
                 scheme=scheme if scheme in SCHEMES else None,
                 notice=notice,
                 error=error,
+                methods=METHODS,
+                password=f"{AUTH}/settings/security#password",
             ),
             status,
         )

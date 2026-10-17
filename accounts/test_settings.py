@@ -156,6 +156,16 @@ class Settings(unittest.TestCase):
         self.assertNotIn('type="password"', body)
         self.assertNotIn("username", " ".join(fields))
 
+    def test_sign_in_methods_and_password_open_on_the_sign_in_site(self):
+        body = self.get("/").get_data(as_text=True)
+        links = re.findall(r'href="(https://[^"]+)"', body)
+        self.assertEqual(links, [
+            "https://auth.kelliher.info/settings/two-factor-authentication#passkey",
+            "https://auth.kelliher.info/settings/two-factor-authentication#otp",
+            "https://auth.kelliher.info/settings/two-factor-authentication#manage",
+            "https://auth.kelliher.info/settings/security#password",
+        ])
+
     def test_identity_is_required(self):
         self.assertEqual(self.get("/", user=None).status_code, 401)
         self.assertEqual(self.post("/name", {"display_name": "X"}, user=None).status_code, 401)
